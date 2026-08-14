@@ -8,7 +8,7 @@ DeepSeek V4 Pro / Flash 首轮锚定插件（anchored-standard）的 **opencode 
 
 1. **检测是否为会话第一次发送消息**：读取会话消息总数即可判定——AI 无法主动发起消息，用户消息之前会话必为 0 条（无状态、跨进程准确；空会话查询返回空数组而非报错，已实测）
 2. **非首次 → 直接退出**，不做任何事（后续消息全工具）
-3. **首次 → 拦截工具描述**：把该消息的 agent 改写为 minimal，wire 层只发送 read+bash 两个工具 schema，模型只看到这 2 个工具（底层工具并未禁用）
+3. **首次 → 拦截工具描述**：把该消息的 agent 改写为 minimal，wire 层只发送 read+bash 两个工具 schema，模型只看到这 2 个工具（底层工具并未禁用；含 describe_image/html2read 等插件自定义工具在内全部拦截，实测首条消息工具面纯净为 bash+read）
 
 **第一性原理**：模型思维只受输入内容影响——锚定的全部意义就是控制"首次请求输入中的工具 schema"。minimal agent 的 permission deny 效果即工具描述根本不进请求，与"拦截描述"等价。
 

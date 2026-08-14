@@ -54,6 +54,9 @@ export const AnchoredStandardPlugin: Plugin = async ({ client, serverUrl }) => {
     headers: buildAuthHeaders(),
   })
 
+  /** 已完成锚定切换的会话（首次 minimal 工具调用后标记；插件重启后重置，会重新锚定一次，无害） */
+  const switched = new Set<string>()
+
   async function log(level: "info" | "warn", message: string, extra?: Record<string, unknown>) {
     try {
       await client.app.log({
@@ -72,6 +75,7 @@ export const AnchoredStandardPlugin: Plugin = async ({ client, serverUrl }) => {
       const modelID = session.model?.id
       if (!modelID || !modelWhitelist.includes(modelID)) return
       await v2.v2.session.switchAgent({ sessionID, agent: targetAgent }, { throwOnError: true })
+      switched.add(sessionID)
       await log("info", "anchored: switched to full tool agent", {
         sessionID,
         model: modelID,
@@ -86,6 +90,19 @@ export const AnchoredStandardPlugin: Plugin = async ({ client, serverUrl }) => {
   }
 
   return {
+    "chat.message": async (input, output) => {
+      // 已锚定过的会话，后续 minimal 消息改写为 build：锚定只在会话首次请求
+      // 发生一次（报告语义），后续消息恢复全工具。实测：turn 内工具面锁定
+      // 消息级 agent，switchAgent 只改会话级标签、解除不了当前/后续消息的
+      // 2 工具限制——若不改写，用户常驻 minimal 会被永久限制（BUG 修复
+      // 2026-08-15）。
+      if (input.agent !== ANCHOR_AGENT) return
+      if (!switched.has(input.sessionID)) return
+      const msg = output?.message as { info?: { agent?: string }; agent?: string } | undefined
+      if (msg?.info) msg.info.agent = targetAgent
+      else if (msg?.agent) msg.agent = targetAgent
+      await maybeSwitch(input.sessionID)
+    },
     "tool.execute.after": async (input) => {
       await maybeSwitch(input.sessionID)
     },

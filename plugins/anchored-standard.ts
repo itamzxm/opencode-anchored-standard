@@ -36,6 +36,17 @@ export const AnchoredStandardPlugin: Plugin = async ({ client }) => {
 
   return {
     "chat.message": async (input, output) => {
+      // 排除子代理会话：task 工具派发的子代理是新会话，首条消息会被误判为
+      // 用户首次消息而改写为 minimal，导致子代理全程 2 工具、权限受限
+      // （实证：2026-08-15 子代理状态栏显示 Minimal、无法读外部目录）。
+      // 子代理会话均有 parentID（v1 Session.parentID），存在即跳过。
+      try {
+        const sess = await client.session.get({ path: { id: input.sessionID } })
+        if (sess?.data?.parentID) return
+      } catch {
+        // 查询失败不阻断（继续走首次判定）
+      }
+
       // 功能 1：读取会话消息总数判定是否首次（chat.message 在当前消息保存前
       // 触发，首次时计数为 0；AI 无法主动发起消息，无需其他状态）
       let count = 0

@@ -60,6 +60,21 @@ Copy-Item plugins\anchored-standard.ts "$env:USERPROFILE\.config\opencode\plugin
 
 功能不损失：锚定回合受限的只是"可见工具"，bash 可完成读取与执行；首个工具调用后立即恢复全部工具（edit/grep/glob/task 等）。
 
+## 手机版（opencode run 链路）适配
+
+手机遥控端（如 CloudCLI 类项目）通过 `opencode run` 独立子进程发消息（每次消息一个进程，消息级 agent 决定该次 run 全程回合）。实测结论：
+
+- **插件在 `opencode run` 场景会加载，但 `switchAgent` 无法连接 run 的进程内 server**（`anchored: check/switch failed ... Unable to connect`），因此插件无法在 run 链路内恢复全工具；
+- 正确适配：**新建会话的首条消息加 `--agent minimal` 锚定，延续会话不加参数（默认 agent 全工具）**。即"每个会话第一条消息 2 工具锚定，之后全工具"，与报告机制同构；
+- 实测：`--agent minimal` 时模型调用 glob 被拒（`Model tried to call unavailable tool 'glob'. Available tools: bash, read, ...`），改用 bash 完成任务；延续会话（无 `--agent`）glob 正常可用。
+
+```js
+// 适配示例（服务端 spawn 参数拼接处）
+if (!providerSessionId && permissionMode !== 'plan') {
+  args.push('--agent', 'minimal'); // 仅新建会话首条消息锚定
+}
+```
+
 ## 配置（环境变量，可选）
 
 | 变量 | 默认值 | 说明 |

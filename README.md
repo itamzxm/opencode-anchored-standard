@@ -1,23 +1,20 @@
 # opencode-anchored-standard
 
-DeepSeek V4 Pro / Flash 首轮锚定插件（anchored-standard）的 **opencode 移植版**，全自动无感。
+**手动极简模式插件**（A 方案，v5）：用户选择极简（minimal）agent 后，插件在首轮实现与 DeepSeek Harness 官方 minimal preset 一致的 wire 层效果，首轮之后恢复完整工具面。
 
-把 [xiaobright/modeltest](https://github.com/xiaobright/modeltest) 研究报告（2026-08-14）验证有效的机制移植到 [opencode](https://opencode.ai)，并**对齐官方 DeepSeek Harness minimal preset 的 wire 层定义**。
+## 核心方案（v5，2026-08-15）
 
-## 核心方案（v4 官方对齐版，2026-08-15）
+**触发**：用户手动选择 `minimal`（极简）agent 后插件才生效；不选择则完全不干预（无感自动检测已移除）。
 
-**首轮（会话第一个模型请求）做两件事，之后完全不干预：**
+**生效机制**（对齐官方 minimal + anchored-standard 两阶段语义）：
 
-1. **system 层对齐**：`experimental.chat.system.transform` 把 system prompt 替换为官方 minimal 唯一 persona 句——`You are a helpful software engineer assistant.`（官方 `minimal-preset.snapshot.ts` 快照锁定原文；等价官方 `complete: true` 屏蔽全部其他 system 段的语义）
-2. **工具面收窄**：`chat.message` 把首条消息的 agent 改写为 minimal（permission 仅 `read/bash/edit/write`，即官方 `bash + str_replace_editor` 的功能等价：view≈read、str_replace≈edit、insert≈write；`glob` 保持 deny——报告微探针实测 `bash+glob` 会直接回到 standard 轨迹）
+1. **首条消息**（会话消息数 = 0）：保持 minimal —— 首轮窄工具面 `read/bash/edit/write`（官方 `bash + str_replace_editor` 功能等价；`glob` deny，报告实测其为轨迹破坏分界）
+2. **system 层**：锚定会话的每次模型请求，system prompt 替换为官方 minimal 唯一 persona 句 `You are a helpful software engineer assistant.`（官方 `minimal-preset.snapshot.ts` 快照锁定原文，含句号；等价官方 `complete: true` 屏蔽其他 system 段）
+3. **第二条消息起**：消息 agent 改写为恢复目标（默认 `build`）—— 本回合起全工具（官方 anchored-standard：首个工具调用后恢复完整 Standard 目录；消息级 agent 改写只对本回合生效，已实测）
+4. **子代理**：继承 minimal 时直接改回恢复目标（v2 实证：子代理全程窄工具会权限受限无法读外部目录）；子代理不进锚定 Set、system 不被替换
+5. **切走即停**：用户切回非 minimal agent → 停止干预，system 恢复原样
 
-**判定**：首轮 = 陌生会话 + 消息数 == 1（用户消息已保存、assistant 尚未创建的时刻），Set 幂等，工具回合/后续轮次/旧会话均不干预（进程重启后旧会话消息数 > 1，不会误锚定）。
-
-**子代理**：同样获得首轮 persona system（子代理会话工具面不受限——chat.message 仍排除子代理，避免其被限制为窄工具集）。
-
-**移除**：v3 的 user 首句注入已移除（system 层已承担 persona，双份冗余且官方无此机制）。
-
-**第一性原理**：模型思维只受输入内容影响——锚定的全部意义就是控制"首次请求输入中的 system prompt + 工具 schema"。minimal agent 的 permission deny 效果即工具描述根本不进请求，与"拦截描述"等价。
+**第一性原理**：模型思维只受输入内容影响——极简模式 = 控制"输入中的 system prompt + 工具 schema"；首轮窄面选轨迹，随后恢复完整能力。
 
 ## 背景与证据
 
@@ -37,26 +34,14 @@ modeltest 在 Project2 工程维护评测（V4.1b 题面）上的实测：
 - 增益来自**首次请求的窄工具面**，不是全程两工具、不是 Linux、不是单一工具入口（PTC 无效）。
 - 微探针分界：`bash+read` → minimal 轨迹；**`bash+glob` → 直接回到 standard 轨迹**。
 - Flash 的轨迹主要跟随 minimal persona 的精确措辞（persona 语义改写 → 回落到 standard-like），Pro 主要跟随首轮工具 schema。
-- 影响来自"模型实际可调用的 schema surface"，不是看见一段工具名称文本——模型只关心输入内容，可见性决定思维。
-
-## 官方定义对齐（v4 新增，来源 deepseek-ai/deepseek-harness）
-
-| 维度 | 官方 minimal | 本插件对齐 |
-|---|---|---|
-| system prompt | 恰一句 `You are a helpful software engineer assistant.`（complete: true） | system.transform 首轮替换为该句（含句号） |
-| 工具 1 | 持久 `bash`（timeout 300s） | `bash` |
-| 工具 2 | `str_replace_editor`（maxOutputChars 16000） | `read`（view）+ `edit`（str_replace）+ `write`（insert） |
-| 无 compaction / 无 AGENTS.md 注入 / 无 sandbox | 官方 minimal 无这些 | opencode 侧不额外注入，对齐"无额外 system 段" |
-| 首轮后 | anchored-standard：首个工具调用后恢复完整 Standard 工具 | 本插件：首轮后不再干预，工具面与 system 完整恢复 |
-
-无法对齐的边界：官方 `persistent bash` 的镜像/无网描述与 300s 超时、`str_replace_editor` 的确切 schema 是 DSH 内建行为，opencode 只能对齐"可见面"（工具名集合 + system 内容），不能复刻行为本体。
+- 影响来自"模型实际可调用的 schema surface"，不是看见一段工具名称文本。
 
 ## 文件
 
 | 文件 | 安装位置 | 作用 |
 |---|---|---|
-| `agents/minimal.md` | `~/.config/opencode/agent/`（或 `agents/`） | minimal 锚定模式：permission 仅 read/bash/edit/write（其余工具描述不进请求） |
-| `plugins/anchored-standard.ts` | `~/.config/opencode/plugins/` | system.transform hook：首轮 system 替换为官方 persona；chat.message hook：首次消息改写为 minimal，非首次退出 |
+| `agents/minimal.md` | `~/.config/opencode/agent/`（或 `agents/`） | 极简模式 agent：permission 仅 read/bash/edit/write |
+| `plugins/anchored-standard.ts` | `~/.config/opencode/plugins/` | chat.message hook：极简模式首条保持、后续恢复、子代理豁免；system.transform hook：锚定会话 system 替换为官方 persona |
 
 ## 安装
 
@@ -73,22 +58,25 @@ Copy-Item plugins\anchored-standard.ts "$env:USERPROFILE\.config\opencode\plugin
 1. 完全重启 opencode（TUI 或桌面端）
 2. 卸载：删除上述两个文件并重启
 
-## 使用（无感）
+## 使用
 
-无需任何操作：正常新建会话发消息即可——**每个会话的第一个模型请求自动锚定（官方 persona system + 窄工具面）**，之后所有请求全 system 全工具。用户永远不需要切换模式；minimal 模式仅在首轮内部使用。
+1. 新建会话，在 agent 选择中选 **minimal（极简）** —— 首条消息自动获得极简锚定（官方 persona system + 窄工具面）
+2. 第二条消息起自动恢复 `build`（全工具）
+3. 不选 minimal → 插件完全不干预（等同未安装）
 
 ## 配置（环境变量，可选）
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `OPENCODE_ANCHOR_MODELS` | `deepseek-v4-pro,deepseek-v4-flash` | 生效的模型白名单，逗号分隔 |
+| `OPENCODE_ANCHOR_RESTORE_AGENT` | `build` | 首轮后恢复的 agent 名 |
 
 ## 验证
 
-- 新会话首条消息：wire 层 system 恰为一句 `You are a helpful software engineer assistant.`；模型只能调用 read/bash/edit/write（要求用 glob 会被告知不可用）；
-- 同会话第二条消息：glob/grep 等全部可用，system 恢复完整；
-- 子代理首轮：system 同样替换为 persona 句，工具面不受限；
-- 旧会话续开：不锚定（消息数 > 1）。
+- 选 minimal 后首条消息：wire 层 system 恰为一句 `You are a helpful software engineer assistant.`；模型只能调用 read/bash/edit/write（要求用 glob 会被告知不可用）；
+- 第二条消息起：glob/grep 等全部可用；
+- 不选 minimal：完全无感，等同未安装；
+- 子代理：工具面不受限（继承 minimal 时自动恢复 build）；
+- 切回 build 后：system 恢复原样。
 
 ## 风险与限制
 

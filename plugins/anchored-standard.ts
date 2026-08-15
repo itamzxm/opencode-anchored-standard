@@ -1,98 +1,65 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
 /**
- * anchored-standard —— 官方对齐版（v4，2026-08-15）
+ * anchored-standard —— A 方案（v5，2026-08-15）：手动极简模式
  *
- * 对齐目标：DeepSeek Harness 官方 minimal preset（apps/cli/config/agent-presets/minimal/agent.cordis.yml）
- * 的 wire 层效果，两阶段 anchored：
+ * 触发：用户手动选择 minimal（极简）agent 后，插件才生效；不选择则完全不干预。
  *
- * 首轮（会话第一个模型请求）：
- *   1. system 层：system prompt 替换为官方 minimal 唯一 persona 句
- *      "You are a helpful software engineer assistant."（官方 snapshot 锁定原文，
- *      等价官方 complete: true 屏蔽全部其他 system 段）
- *   2. 工具面：chat.message 把首条消息 agent 改写为 minimal（permission 仅
- *      read/bash/edit/write，功能等价官方 bash + str_replace_editor；
- *      报告微探针实测该组合保持 minimal 轨迹，glob 破坏）
- *   3. 子代理会话同样获得 persona system（不改写 agent，工具面不受限）
+ * 机制（对齐 DeepSeek Harness 官方 minimal + anchored-standard 两阶段语义）：
+ *   1. 首条消息（消息数 = 0）：保持 minimal —— 首轮窄工具面
+ *      （read/bash/edit/write，官方 bash+str_replace_editor 功能等价）+ system 替换为
+ *      官方 persona 句 "You are a helpful software engineer assistant."
+ *   2. 第二条消息起：把消息 agent 改写为恢复目标（默认 build）—— 本回合起全工具
+ *      （官方 anchored-standard：首个工具调用后恢复完整 Standard 目录）
+ *   3. system 全程保持官方 persona（官方 anchored-standard "Keep the Minimal complete
+ *      system prompt"，与工具目录两阶段一致）
+ *   4. 子代理：继承 minimal 时直接改回恢复目标（v2 实证：子代理全程窄工具会受限
+ *      无法读外部目录）；子代理不进锚定 Set，system 不被替换
+ *   5. 用户切换回非 minimal agent → 停止干预
  *
- * 首轮之后：不再干预，system 与工具面恢复完整。
- *
- * 第一性原理：模型思维只受输入内容影响——锚定 = 控制"首次请求输入中的
- * system prompt + 工具 schema"。
+ * 第一性原理：模型思维只受输入内容影响——极简模式 = 控制"输入中的
+ * system prompt + 工具 schema"；首轮窄面选轨迹，随后恢复完整能力。
  *
  * 配置（环境变量，可选）：
- *   OPENCODE_ANCHOR_MODELS —— 生效的模型白名单，逗号分隔，默认 deepseek-v4-pro,deepseek-v4-flash
+ *   OPENCODE_ANCHOR_RESTORE_AGENT —— 首轮后恢复的 agent，默认 build
  */
 
-const DEFAULT_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"]
-const ANCHOR_AGENT = "minimal"
+const MINIMAL_AGENT = "minimal"
+const DEFAULT_RESTORE_AGENT = "build"
 // 官方 minimal persona（minimal-preset.snapshot.ts 快照锁定原文，含句号）
 const PERSONA = "You are a helpful software engineer assistant."
 
-// 已锚定会话：首轮 system 替换只做一次（本进程内）。重启后旧会话消息数 > 1
-// 不满足判定，不会误锚定；工具回合时 count=2 且已在集合中，直接跳过。
+// 锚定会话（用户手动选择极简模式且未切走）
 const anchored = new Set<string>()
 
-function envList(name: string, fallback: string[]): string[] {
-  const raw = process.env[name]
-  if (!raw) return fallback
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-}
-
 export const AnchoredStandardPlugin: Plugin = async ({ client }) => {
-  const modelWhitelist = envList("OPENCODE_ANCHOR_MODELS", DEFAULT_MODELS)
+  const restoreAgent = process.env.OPENCODE_ANCHOR_RESTORE_AGENT?.trim() || DEFAULT_RESTORE_AGENT
 
   return {
     "chat.message": async (input, output) => {
-      // 排除子代理会话：task 工具派发的子代理是新会话，首条消息会被误判为
-      // 用户首次消息而改写为 minimal，导致子代理全程 2 工具、权限受限
-      // （实证：2026-08-15 子代理状态栏显示 Minimal、无法读外部目录）。
-      // 子代理会话均有 parentID（v1 Session.parentID），存在即跳过。
-      try {
-        const sess = await client.session.get({ path: { id: input.sessionID } })
-        if (sess?.data?.parentID) return
-      } catch {
-        // 查询失败不阻断（继续走首次判定）
+      const sessionID = input.sessionID
+
+      // 用户不在极简模式 → 停止干预（切走即退出）
+      if (input.agent !== MINIMAL_AGENT) {
+        anchored.delete(sessionID)
+        return
       }
 
-      // 功能 1：读取会话消息总数判定是否首次（chat.message 在当前消息保存前
-      // 触发，首次时计数为 0；AI 无法主动发起消息，无需其他状态）
-      let count = 0
+      // 子代理（有 parentID）：不继承极简限制——本回合直接恢复目标 agent，
+      // 不进锚定 Set、system 不被替换（v2 实证：子代理窄工具会权限受限）
       try {
-        const result = await client.session.messages({
-          path: { id: input.sessionID },
-          query: { limit: 10 },
-        })
-        count = result.data?.length ?? 0
+        const sess = await client.session.get({ path: { id: sessionID } })
+        if (sess?.data?.parentID) {
+          const msg = output?.message as { info?: { agent?: string }; agent?: string } | undefined
+          if (msg?.info) msg.info.agent = restoreAgent
+          else if (msg?.agent) msg.agent = restoreAgent
+          return
+        }
       } catch {
-        return // 查询失败 → 不干预（宁可错过锚定，不破坏消息）
+        // 查询失败不阻断（继续走极简判定）
       }
-      if (count > 0) return // 非首次 → 退出
 
-      // 用户手动选择了 minimal 模式 → 不干预（用户明确意图）
-      if (input.agent === ANCHOR_AGENT) return
-
-      // 模型白名单之外 → 退出
-      const modelID = input.model?.modelID
-      if (!modelID || !modelWhitelist.includes(modelID)) return
-
-      // 功能 2：首次消息 → 拦截工具描述，只保留 minimal 工具集（改写消息
-      // agent=minimal，其 permission 使其余工具描述不进入请求）
-      const msg = output?.message as { info?: { agent?: string }; agent?: string } | undefined
-      if (msg?.info) msg.info.agent = ANCHOR_AGENT
-      else if (msg?.agent) msg.agent = ANCHOR_AGENT
-    },
-
-    // 功能 3：首轮 system 对齐（wire 层，官方 minimal persona）
-    // 判定：陌生会话 + 消息数 == 1（首个模型请求时刻，用户消息已保存、assistant
-    // 尚未创建）→ 替换 system 并记录；工具回合/后续轮次/旧会话均不干预。
-    "experimental.chat.system.transform": async (input: any, output: any) => {
-      const sessionID = input?.sessionID
-      if (!sessionID || anchored.has(sessionID)) return
-
+      // 主会话：判定是否首条消息（chat.message 在当前消息保存前触发，首次计数为 0）
       let count = 0
       try {
         const result = await client.session.messages({
@@ -101,11 +68,26 @@ export const AnchoredStandardPlugin: Plugin = async ({ client }) => {
         })
         count = result.data?.length ?? 0
       } catch {
-        return // 查询失败 → 不干预
+        return // 查询失败 → 不干预（宁可错过锚定，不破坏消息）
       }
-      if (count !== 1) return
 
       anchored.add(sessionID)
+
+      // 首条消息（count = 0）：保持 minimal（首轮窄工具面），不改写
+      if (count === 0) return
+
+      // 第二条消息起：本回合起恢复全工具（消息级 agent 改写只对本回合生效，
+      // 实证 2026-08-15；官方 anchored-standard 首个工具调用后恢复完整目录）
+      const msg = output?.message as { info?: { agent?: string }; agent?: string } | undefined
+      if (msg?.info) msg.info.agent = restoreAgent
+      else if (msg?.agent) msg.agent = restoreAgent
+    },
+
+    // system 层：锚定会话全程替换为官方 persona（官方 anchored-standard 保留
+    // minimal 完整 system prompt；切走后 Set 移除，恢复原 system）
+    "experimental.chat.system.transform": async (input: any, output: any) => {
+      const sessionID = input?.sessionID
+      if (!sessionID || !anchored.has(sessionID)) return
       const system = output?.system
       if (Array.isArray(system)) {
         system.splice(0, system.length, PERSONA)

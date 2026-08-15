@@ -1,20 +1,22 @@
 # opencode-anchored-standard
 
-**手动极简模式插件**（A 方案，v5）：用户选择极简（minimal）agent 后，插件在首轮实现与 DeepSeek Harness 官方 minimal preset 一致的 wire 层效果，首轮之后恢复完整工具面。
+**默认精简模式插件**（v5.4）：精简锚定是默认行为——每个会话（build/minimal/子代理）的第一个模型请求统一精简锚定，之后恢复完整工具。
 
-## 核心方案（v5，2026-08-15）
+## 核心方案（v5.4，2026-08-15）
 
-**触发**：用户手动选择 `minimal`（极简）agent 后插件才生效；不选择则完全不干预（无感自动检测已移除）。
+**触发**：默认启用，无需任何选择/预热。任何会话的第一个模型请求自动精简锚定。
 
-**生效机制**（对齐官方 minimal + anchored-standard 两阶段语义）：
+**机制**（对齐 DeepSeek Harness 官方 minimal + anchored-standard 两阶段语义）：
 
-1. **首条消息**（会话消息数 = 0）：保持 minimal —— 首轮窄工具面 `read/bash/edit/write`（官方 `bash + str_replace_editor` 功能等价；`glob` deny，报告实测其为轨迹破坏分界）
+1. **首条消息**（消息数 = 0）：消息 agent 改写为 minimal —— 首轮窄工具面 `read/bash/edit/write + webfetch`（官方 `bash + str_replace_editor` 功能等价 + 网页抓取；`glob` deny，报告实测其为轨迹破坏分界）
 2. **system 层**：锚定会话的每次模型请求，system prompt 替换为官方 minimal 唯一 persona 句 `You are a helpful software engineer assistant.`（官方 `minimal-preset.snapshot.ts` 快照锁定原文，含句号；等价官方 `complete: true` 屏蔽其他 system 段）
-3. **第二条消息起**：消息 agent 改写为恢复目标（默认 `build`）—— 本回合起全工具（官方 anchored-standard：首个工具调用后恢复完整 Standard 目录；消息级 agent 改写只对本回合生效，已实测）
-4. **子代理**：继承 minimal 时直接改回恢复目标（v2 实证：子代理全程窄工具会权限受限无法读外部目录）；子代理不进锚定 Set、system 不被替换
-5. **切走即停**：用户切回非 minimal agent → 停止干预，system 恢复原样
+3. **恢复（统一时间点）**：第一个模型请求发起时（system.transform 首次触发）`switchAgent` 回恢复目标——`switchAgent` 语义是 "subsequent provider turns"，不影响当前请求，因此第一个请求保持 minimal（窄工具面 + persona 生效），第二个请求起全工具
+4. **恢复目标 = 会话自身 agent**：build 会话 → build；子代理 general → general；用户手动选 minimal → build
+5. **第二条消息兜底**：若 switchAgent 尚未生效（仍是 minimal），消息 agent 改回恢复目标（消息级改写只对本回合生效，已实证）
 
-**第一性原理**：模型思维只受输入内容影响——极简模式 = 控制"输入中的 system prompt + 工具 schema"；首轮窄面选轨迹，随后恢复完整能力。
+**主子代理统一**：不区分主会话与子代理（锚定的本质 = 每个会话第一个模型请求的输入控制，子代理同样适用）。
+
+**第一性原理**：模型思维只受输入内容影响——精简模式 = 控制"输入中的 system prompt + 工具 schema"；首轮窄面选轨迹，随后恢复完整能力。
 
 ## 背景与证据
 
@@ -28,6 +30,13 @@ modeltest 在 Project2 工程维护评测（V4.1b 题面）上的实测：
 | **V4 Pro / DSH anchored-standard** | **2** | **98, 99** | **98.5** |
 | V4 Flash / OpenCode 等 | 4 | 92, 93, 95, 93 | 93.25 |
 
+用户本机实测（同任务「使用html技术，复刻马里奥第一关」，deepseek-v4-flash）：
+
+| 跑法 | 耗时 | 轨迹指纹 | 备注 |
+|---|---|---|---|
+| 裸提示（无插件） | ~13 分钟 | `let me=159`（standard 轨迹），175K 巨型单块 | 一次性写盘无自检 |
+| v5.4 精简模式 | ~2 分钟 | `we=118` / `let me=0`（minimal 轨迹），18 短块 | 语法检查+headless+vm 模拟自检 |
+
 关键结论：
 
 - DeepSeek V4 Pro 对**首次请求的 wire 层工具 schema** 高度敏感：官方 minimal preset 是 RL 对齐配置（官方快照测试明文 "sends the exact RL prompt and schemas"），模型在宽工具面下会偏航（`let me` 高频、上下文膨胀、搜索失控）。
@@ -40,8 +49,8 @@ modeltest 在 Project2 工程维护评测（V4.1b 题面）上的实测：
 
 | 文件 | 安装位置 | 作用 |
 |---|---|---|
-| `agents/minimal.md` | `~/.config/opencode/agent/`（或 `agents/`） | 极简模式 agent：permission 仅 read/bash/edit/write |
-| `plugins/anchored-standard.ts` | `~/.config/opencode/plugins/` | chat.message hook：极简模式首条保持、后续恢复、子代理豁免；system.transform hook：锚定会话 system 替换为官方 persona |
+| `agents/minimal.md` | `~/.config/opencode/agent/`（或 `agents/`） | 精简锚定 agent：permission 仅 read/bash/edit/write + webfetch |
+| `plugins/anchored-standard.ts` | `~/.config/opencode/plugins/` | chat.message hook：首条消息改写 minimal；system.transform hook：system 替换为官方 persona + 首个请求后 switchAgent 恢复 |
 
 ## 安装
 
@@ -58,31 +67,28 @@ Copy-Item plugins\anchored-standard.ts "$env:USERPROFILE\.config\opencode\plugin
 1. 完全重启 opencode（TUI 或桌面端）
 2. 卸载：删除上述两个文件并重启
 
-## 使用
+## 使用（无感）
 
-1. 新建会话，在 agent 选择中选 **minimal（极简）** —— 首条消息自动获得极简锚定（官方 persona system + 窄工具面）
-2. 第二条消息起自动恢复 `build`（全工具）
-3. 不选 minimal → 插件完全不干预（等同未安装）
+无需任何操作：每个会话的第一个模型请求自动精简锚定（官方 persona system + 窄工具面），第二个请求起全工具。用户永远不需要切换模式；minimal 模式仅在首轮内部使用。
 
 ## 配置（环境变量，可选）
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `OPENCODE_ANCHOR_RESTORE_AGENT` | `build` | 首轮后恢复的 agent 名 |
+| `OPENCODE_ANCHOR_RESTORE_AGENT` | `build` | 用户手动选 minimal 的会话的恢复目标 |
 
 ## 验证
 
-- 选 minimal 后首条消息：wire 层 system 恰为一句 `You are a helpful software engineer assistant.`；模型只能调用 read/bash/edit/write（要求用 glob 会被告知不可用）；
-- 第二条消息起：glob/grep 等全部可用；
-- 不选 minimal：完全无感，等同未安装；
-- 子代理：工具面不受限（继承 minimal 时自动恢复 build）；
-- 切回 build 后：system 恢复原样。
+- 新会话首条消息：wire 层 system 恰为一句 `You are a helpful software engineer assistant.`；模型只能调用 read/bash/edit/write/webfetch（要求用 glob 会被告知不可用）；
+- 同会话第二条消息（或首个工具调用后的请求）：glob/grep/task 等全部可用，system 恢复完整；
+- 子代理首条同样精简锚定，工具调用后恢复原 agent；
+- 旧会话续开：不锚定（消息数 > 1）。
 
 ## 风险与限制
 
 - 报告为 Project2 单题 n=2 复现，**不保证跨任务普适提升**，请按需实测；
 - opencode 的 system prompt 组装机制与 DSH 的 `complete: true` 不完全相同（本插件用 system.transform 替换数组实现等价效果，已被 opencode 源码时序确认）；
-- DeepSeek 服务端路由行为未知，若服务端变化锚定效果可能变化；
+- `switchAgent` 时序依赖 "subsequent provider turns" 语义（源码确认），已实测首轮工具面纯净；
 - 插件在查询消息数失败时会跳过干预（宁可错过锚定，不破坏消息）。
 
 ## 参考

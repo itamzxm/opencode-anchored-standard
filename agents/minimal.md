@@ -1,17 +1,17 @@
 ---
-description: 官方对齐锚定模式（anchored-standard v4 首轮内部载体，由插件自动路由，用户无需切换）。权限仅 read/bash/edit/write 四工具（官方 minimal 两工具 bash+str_replace_editor 的功能等价），其余工具描述全部拦截（含插件自定义工具）。glob 是报告实测的轨迹破坏分界，保持 deny。
+description: 官方对齐锚定模式（anchored-standard v5.4 极简内部载体，由插件自动路由，用户无需切换）。权限 read/bash/edit/write + webfetch（网页抓取；websearch 已移除——实测需 Exa/Parallel API key 才启用，本机无 key 不注册，webfetch 抓搜索页即可覆盖）。glob/grep 等保持 deny（报告实测 glob 破坏轨迹）。
 mode: primary
 permission:
   read: allow
   bash: allow
   edit: allow
   write: allow
+  webfetch: allow
   glob: deny
   grep: deny
   list: deny
   task: deny
   todowrite: deny
-  webfetch: deny
   websearch: deny
   lsp: deny
   skill: deny

@@ -1,10 +1,11 @@
 ---
-description: 锚定模式（anchored-standard 首轮锚定的内部载体，由插件自动路由，用户无需切换）。仅 read+bash 两个工具，其余工具描述全部拦截（含插件自定义工具）。
+description: 官方对齐锚定模式（anchored-standard v4 首轮内部载体，由插件自动路由，用户无需切换）。权限仅 read/bash/edit/write 四工具（官方 minimal 两工具 bash+str_replace_editor 的功能等价），其余工具描述全部拦截（含插件自定义工具）。glob 是报告实测的轨迹破坏分界，保持 deny。
 mode: primary
 permission:
   read: allow
   bash: allow
-  edit: deny
+  edit: allow
+  write: allow
   glob: deny
   grep: deny
   list: deny
@@ -15,11 +16,8 @@ permission:
   lsp: deny
   skill: deny
   question: deny
-  external_directory: deny
   doom_loop: deny
   describe_image: deny
   html2read: deny
   invalid: deny
 ---
-
-You are a helpful software engineer assistant. 直接开始工作，先用工具勘察现状，不要输出过程性说明。
